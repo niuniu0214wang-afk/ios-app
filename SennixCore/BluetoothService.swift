@@ -22,17 +22,19 @@ final class BluetoothService: NSObject, ObservableObject {
     private var peripherals: [UUID: CBPeripheral] = [:]
     private var connectedPeripheral: CBPeripheral?
     private var channel: CBCharacteristic?
+    private var scanFilter: String?
 
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: nil)
     }
 
-    func scan() {
+    func scan(filter: String? = nil) {
         guard central.state == .poweredOn else { state = .unavailable; return }
         devices.removeAll(); peripherals.removeAll(); state = .scanning
+        scanFilter = filter
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-        addLog("开始扫描 MJ-20")
+        addLog("开始扫描 \(filter == "mattress" ? "智能床垫" : "智能枕头")")
     }
 
     func stopScan() { central.stopScan(); if case .scanning = state { state = .idle } }
@@ -68,7 +70,10 @@ extension BluetoothService: CBCentralManagerDelegate {
                                     advertisementData: [String: Any], rssi RSSI: NSNumber) {
         Task { @MainActor in
             let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "未知设备"
-            guard name.localizedCaseInsensitiveContains("MJ-20") else { return }
+            let isPillow = name.localizedCaseInsensitiveContains("MJ-20")
+            let isMattress = ["MJ-01", "MJ-02", "MJ-06", "MJ-08"].contains(where: { name.localizedCaseInsensitiveContains($0) })
+            guard isPillow || isMattress else { return }
+            if let filter = self.scanFilter, (filter == "pillow") != isPillow { return }
             self.peripherals[peripheral.identifier] = peripheral
             let item = DiscoveredDevice(id: peripheral.identifier, name: name, rssi: RSSI.intValue)
             if let i = self.devices.firstIndex(where: { $0.id == item.id }) { self.devices[i] = item } else { self.devices.append(item) }

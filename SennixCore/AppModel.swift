@@ -2,7 +2,8 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
-    enum Route { case login, devices, main }
+    enum Route { case login, devices, main, mattressMain }
+    enum DeviceScreen { case list, catalog, scan }
     enum AuthScreen { case login, register, resetPassword }
     enum ControlMode: String, CaseIterable { case automatic = "自动模式", manual = "手动模式" }
 
@@ -30,13 +31,31 @@ final class AppModel: ObservableObject {
     @Published var registerCodeSeconds = 0
     @Published var resetCodeSeconds = 0
     @Published var toast: String?
+    @Published var deviceScreen: DeviceScreen = .list
+    @Published var deviceCategory = "mattress"
+    @Published var boundDevices: [String] = []
+    @Published var deviceScanStopped = false
+    @Published var pendingDeviceName: String?
+    @Published var activeDeviceName = "MJ-20"
+    @Published var mattressTab = 0
+    @Published var mattressAutomatic = true
+    @Published var mattressSide = 0
+    @Published var mattressZones = [50, 50, 50, 50, 50, 50]
+    @Published var mattressModeMinutes = [15, 15, 15, 15]
+    @Published var activeMattressFunction: Int?
+    @Published var mattressCountdownSeconds = 0
+    @Published var leftBedName = "左床"
+    @Published var rightBedName = "右床"
     private var loginGeneratedCode: String?
     private var registerGeneratedCode: String?
     private var resetGeneratedCode: String?
+    private var deviceScanTask: Task<Void, Never>?
+    private var mattressCountdownTask: Task<Void, Never>?
     let bluetooth = BluetoothService()
 
     init() {
         route = UserDefaults.standard.bool(forKey: "signedIn") ? .devices : .login
+        loadBoundDevices()
         bluetooth.onFrame = { [weak self] command, payload in self?.handle(command: command, payload: payload) }
     }
 
@@ -44,6 +63,81 @@ final class AppModel: ObservableObject {
         get { UserDefaults.standard.dictionary(forKey: "accounts") as? [String: String] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: "accounts") }
     }
+
+    private var boundDevicesKey: String { "boundDevices_" + (UserDefaults.standard.string(forKey: "signedInPhone") ?? phone) }
+    func loadBoundDevices() { boundDevices = UserDefaults.standard.stringArray(forKey: boundDevicesKey) ?? [] }
+    private func rememberBoundDevice(_ name: String) {
+        if !boundDevices.contains(name) { boundDevices.append(name); UserDefaults.standard.set(boundDevices, forKey: boundDevicesKey) }
+    }
+    func openDeviceCatalog() { deviceScreen = .catalog }
+    func selectDeviceCategory(_ category: String) { deviceCategory = category }
+    func beginDeviceScan() {
+        deviceScanTask?.cancel(); deviceScanStopped = false; deviceScreen = .scan; bluetooth.scan(filter: deviceCategory)
+        deviceScanTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            if case .scanning = self.bluetooth.state { self.stopDeviceScan() }
+        }
+    }
+    func stopDeviceScan() { deviceScanTask?.cancel(); bluetooth.stopScan(); deviceScanStopped = true }
+    func leaveDeviceScan() { deviceScanTask?.cancel(); bluetooth.stopScan(); deviceScreen = .catalog }
+    func returnToDeviceList() { bluetooth.stopScan(); deviceScreen = .list; loadBoundDevices() }
+    func showDeviceList() { deviceScreen = .list; route = .devices; loadBoundDevices() }
+    func openBoundDevice(_ name: String) {
+        activeDeviceName = name
+        route = name.hasPrefix("MJ-20") ? .main : .mattressMain
+    }
+    func connectDiscovered(_ device: DiscoveredDevice) {
+        pendingDeviceName = device.name
+        bluetooth.connect(device)
+    }
+    func finishDeviceConnection() {
+        if let name = pendingDeviceName { activeDeviceName = name; rememberBoundDevice(name) }
+        pendingDeviceName = nil
+        route = activeDeviceName.hasPrefix("MJ-20") ? .main : .mattressMain
+    }
+    func enterVirtualDevice() {
+        let name = deviceCategory == "pillow" ? "MJ-20 (虚拟设备)" : "MJ-06 (虚拟设备)"
+        activeDeviceName = name
+        rememberBoundDevice(name)
+        route = deviceCategory == "pillow" ? .main : .mattressMain
+    }
+
+    var mattressModel: String { if activeDeviceName.contains("MJ-01") { return "SCM-BASIC" }; if activeDeviceName.contains("MJ-02") { return "SCM-MAX" }; if activeDeviceName.contains("MJ-08") { return "SCM-ULTRA" }; return "SCM-PRO" }
+    var mattressSupportsSixZones: Bool { mattressModel == "SCM-MAX" || mattressModel == "SCM-ULTRA" }
+    var mattressSupportsVitals: Bool { mattressModel == "SCM-PRO" || mattressModel == "SCM-ULTRA" }
+    var mattressZoneCount: Int { mattressSupportsSixZones ? 6 : 3 }
+    func setMattressFunction(_ index: Int) {
+        if activeMattressFunction == index, mattressCountdownSeconds > 0 { activateAdaptiveMattressMode(); return }
+        if let active = activeMattressFunction, active != index { mattressModeMinutes[active] = 15 }
+        activeMattressFunction = index
+        mattressCountdownSeconds = mattressModeMinutes[index] * 60
+        startMattressCountdown()
+    }
+    func adjustMattressMinutes(_ index: Int, _ delta: Int) {
+        if activeMattressFunction == index, mattressCountdownSeconds > 0 { mattressCountdownSeconds = max(15 * 60, mattressCountdownSeconds + delta * 60) }
+        else { mattressModeMinutes[index] = max(15, mattressModeMinutes[index] + delta) }
+    }
+    func mattressTimeText(_ index: Int) -> String {
+        guard activeMattressFunction == index, mattressCountdownSeconds > 0 else { return "\(mattressModeMinutes[index]) min" }
+        return String(format: "%02d:%02d", mattressCountdownSeconds / 60, mattressCountdownSeconds % 60)
+    }
+    private func startMattressCountdown() {
+        mattressCountdownTask?.cancel()
+        mattressCountdownTask = Task { @MainActor [weak self] in
+            while let self, self.mattressCountdownSeconds > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                self.mattressCountdownSeconds -= 1
+            }
+            self?.activateAdaptiveMattressMode()
+        }
+    }
+    private func activateAdaptiveMattressMode() {
+        if let active = activeMattressFunction { mattressModeMinutes[active] = 15 }
+        activeMattressFunction = nil; mattressCountdownSeconds = 0; mattressCountdownTask?.cancel()
+    }
+    func resetMattressZones() { mattressZones = Array(repeating: 50, count: 6) }
 
     func login() {
         guard phone.count == 11 else { toast = phone.isEmpty ? "请输入手机号" : "请输入有效的11位手机号"; return }
@@ -129,6 +223,8 @@ final class AppModel: ObservableObject {
     private func completeLogin() {
         UserDefaults.standard.set(true, forKey: "signedIn")
         UserDefaults.standard.set(phone, forKey: "signedInPhone")
+        deviceScreen = .list
+        loadBoundDevices()
         route = .devices
     }
 
@@ -145,7 +241,13 @@ final class AppModel: ObservableObject {
         }
     }
     func enterDemo() { route = .main }
-    func logout() { UserDefaults.standard.set(false, forKey: "signedIn"); route = .login; selectedTab = 0 }
+    func logout() {
+        UserDefaults.standard.set(false, forKey: "signedIn")
+        selectedTab = 0
+        deviceScreen = .list
+        showAuthScreen(.login)
+        route = .login
+    }
 
     func setMode(_ mode: ControlMode) {
         controlMode = mode
