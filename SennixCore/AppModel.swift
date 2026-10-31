@@ -3,10 +3,12 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     enum Route { case login, devices, main }
+    enum AuthScreen { case login, register, resetPassword }
     enum ControlMode: String, CaseIterable { case automatic = "自动模式", manual = "手动模式" }
 
     @Published var route: Route
-    @Published var isRegistering = false
+    @Published var authScreen: AuthScreen = .login
+    @Published var usesLoginCode = false
     @Published var selectedTab = 0
     @Published var controlMode: ControlMode = .automatic
     @Published var selectedChamber = 1
@@ -22,7 +24,15 @@ final class AppModel: ObservableObject {
     @Published var phone = ""
     @Published var password = ""
     @Published var confirmPassword = ""
+    @Published var verificationCode = ""
+    @Published var newPassword = ""
+    @Published var loginCodeSeconds = 0
+    @Published var registerCodeSeconds = 0
+    @Published var resetCodeSeconds = 0
     @Published var toast: String?
+    private var loginGeneratedCode: String?
+    private var registerGeneratedCode: String?
+    private var resetGeneratedCode: String?
     let bluetooth = BluetoothService()
 
     init() {
@@ -30,14 +40,109 @@ final class AppModel: ObservableObject {
         bluetooth.onFrame = { [weak self] command, payload in self?.handle(command: command, payload: payload) }
     }
 
+    private var accounts: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "accounts") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "accounts") }
+    }
+
     func login() {
-        guard !phone.isEmpty, !password.isEmpty else { toast = "请输入手机号和密码"; return }
-        UserDefaults.standard.set(true, forKey: "signedIn"); route = .devices
+        guard phone.count == 11 else { toast = phone.isEmpty ? "请输入手机号" : "请输入有效的11位手机号"; return }
+        guard let savedPassword = accounts[phone] else { toast = "该手机号尚未注册"; return }
+        if usesLoginCode {
+            guard !verificationCode.isEmpty else { toast = "请输入验证码"; return }
+            guard verificationCode == loginGeneratedCode else { toast = "验证码不正确"; return }
+        } else {
+            guard !password.isEmpty else { toast = "请输入密码"; return }
+            guard password == savedPassword else { toast = "密码错误"; return }
+        }
+        completeLogin()
     }
 
     func register() {
-        guard password == confirmPassword else { toast = "两次输入的密码不一致"; return }
-        login()
+        guard phone.count == 11 else { toast = "请输入有效的11位手机号"; return }
+        guard !verificationCode.isEmpty else { toast = "请输入验证码"; return }
+        guard verificationCode == registerGeneratedCode else { toast = "验证码不正确"; return }
+        guard password.count >= 6 else { toast = "密码不能少于6位"; return }
+        guard password == confirmPassword else { toast = "两次密码不一致"; return }
+        guard accounts[phone] == nil else { toast = "该手机号已注册，请直接登录"; return }
+        var updatedAccounts = accounts
+        updatedAccounts[phone] = password
+        accounts = updatedAccounts
+        completeLogin()
+    }
+
+    func sendLoginCode() {
+        guard phone.count == 11 else { toast = "请先输入有效的11位手机号"; return }
+        guard accounts[phone] != nil else { toast = "该手机号尚未注册"; return }
+        loginGeneratedCode = makeCode()
+        verificationCode = loginGeneratedCode ?? ""
+        toast = "验证码已发送（测试模式：已自动填入）"
+        startCountdown(\.loginCodeSeconds)
+    }
+
+    func sendRegisterCode() {
+        guard phone.count == 11 else { toast = "请先输入有效的11位手机号"; return }
+        registerGeneratedCode = makeCode()
+        verificationCode = registerGeneratedCode ?? ""
+        toast = "验证码已发送（测试模式：已自动填入）"
+        startCountdown(\.registerCodeSeconds)
+    }
+
+    func sendResetCode() {
+        guard phone.count == 11 else { toast = "请先输入有效的11位手机号"; return }
+        guard accounts[phone] != nil else { toast = "该手机号尚未注册"; return }
+        resetGeneratedCode = makeCode()
+        verificationCode = resetGeneratedCode ?? ""
+        toast = "验证码已发送（测试模式：已自动填入）"
+        startCountdown(\.resetCodeSeconds)
+    }
+
+    func resetPassword() {
+        guard phone.count == 11 else { toast = "请输入有效的11位手机号"; return }
+        guard !verificationCode.isEmpty else { toast = "请输入验证码"; return }
+        guard verificationCode == resetGeneratedCode else { toast = "验证码不正确"; return }
+        guard newPassword.count >= 6 else { toast = "新密码不能少于6位"; return }
+        var updatedAccounts = accounts
+        updatedAccounts[phone] = newPassword
+        accounts = updatedAccounts
+        password = ""
+        newPassword = ""
+        showAuthScreen(.login)
+        toast = "密码已重置，请重新登录"
+    }
+
+    func showAuthScreen(_ screen: AuthScreen) {
+        authScreen = screen
+        usesLoginCode = false
+        verificationCode = ""
+        password = ""
+        confirmPassword = ""
+        newPassword = ""
+    }
+
+    func toggleLoginMethod() {
+        usesLoginCode.toggle()
+        verificationCode = ""
+        password = ""
+    }
+
+    private func completeLogin() {
+        UserDefaults.standard.set(true, forKey: "signedIn")
+        UserDefaults.standard.set(phone, forKey: "signedInPhone")
+        route = .devices
+    }
+
+    private func makeCode() -> String { String(format: "%06d", Int.random(in: 0...999_999)) }
+
+    private func startCountdown(_ keyPath: ReferenceWritableKeyPath<AppModel, Int>) {
+        self[keyPath: keyPath] = 60
+        Task { @MainActor [weak self] in
+            while let self, self[keyPath: keyPath] > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                self[keyPath: keyPath] -= 1
+            }
+        }
     }
     func enterDemo() { route = .main }
     func logout() { UserDefaults.standard.set(false, forKey: "signedIn"); route = .login; selectedTab = 0 }

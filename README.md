@@ -2,6 +2,8 @@
 
 原生 iOS 版本，使用 SwiftUI + CoreBluetooth，界面与功能对应同仓库 Android App。
 
+本仓库是完全独立的 iOS 工程。运行所需的 Logo、枕头、气囊和床垫图片均已包含在 `SennixCore/Assets.xcassets`，不依赖 Android 工程或本机绝对路径。
+
 ## 打开与运行
 
 1. 在 macOS 上用 Xcode 15 或更高版本打开 `SennixCore.xcodeproj`。
