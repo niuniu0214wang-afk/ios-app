@@ -2,6 +2,10 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
+    enum ControlSheet: String, Identifiable {
+        case postureLearning, postureStatus, wifiSetup, adjusting, traction, bedName, bedSelect, mattressSettings, manualHelp, memoryName
+        var id: String { rawValue }
+    }
     enum Route { case login, devices, main, mattressMain }
     enum DeviceScreen { case list, catalog, scan }
     enum AuthScreen { case login, register, resetPassword }
@@ -46,6 +50,10 @@ final class AppModel: ObservableObject {
     @Published var mattressCountdownSeconds = 0
     @Published var leftBedName = "左床"
     @Published var rightBedName = "右床"
+    @Published var controlSheet: ControlSheet?
+    @Published var selectedLearningPosture = 1
+    @Published var adjustmentMessage = "调节中…"
+    @Published var mattressMemories: [String] = UserDefaults.standard.stringArray(forKey: "mattressMemories") ?? []
     private var loginGeneratedCode: String?
     private var registerGeneratedCode: String?
     private var resetGeneratedCode: String?
@@ -55,6 +63,8 @@ final class AppModel: ObservableObject {
 
     init() {
         route = UserDefaults.standard.bool(forKey: "signedIn") ? .devices : .login
+        leftBedName = UserDefaults.standard.string(forKey: "mattressLeftBedName") ?? "左床"
+        rightBedName = UserDefaults.standard.string(forKey: "mattressRightBedName") ?? "右床"
         loadBoundDevices()
         bluetooth.onFrame = { [weak self] command, payload in self?.handle(command: command, payload: payload) }
     }
@@ -138,6 +148,18 @@ final class AppModel: ObservableObject {
         activeMattressFunction = nil; mattressCountdownSeconds = 0; mattressCountdownTask?.cancel()
     }
     func resetMattressZones() { mattressZones = Array(repeating: 50, count: 6) }
+    func saveMattressMemory(_ name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        mattressMemories.append(clean)
+        UserDefaults.standard.set(mattressMemories, forKey: "mattressMemories")
+    }
+    func renameCurrentBed(_ name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        if mattressSide == 0 { leftBedName = clean } else { rightBedName = clean }
+        UserDefaults.standard.set(clean, forKey: mattressSide == 0 ? "mattressLeftBedName" : "mattressRightBedName")
+    }
 
     func login() {
         guard phone.count == 11 else { toast = phone.isEmpty ? "请输入手机号" : "请输入有效的11位手机号"; return }
